@@ -7,6 +7,7 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 from datetime import datetime
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,7 +28,13 @@ except ImportError:
     create_client = None
     SupabaseClient = None
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Pré-carrega o CNAE do IBGE na startup para evitar lentidão na 1ª busca
+    await _get_cnae_data()
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 # Configurações
 DATABASE         = "database.sqlite"
