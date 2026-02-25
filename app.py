@@ -1,11 +1,7 @@
 import os
 import uuid
 import json
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
+import base64
 from datetime import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
@@ -53,14 +49,12 @@ if supabase:
 else:
     print("[SUPABASE] SUPABASE_URL / SUPABASE_SERVICE_KEY não configurados — uploads desativados.")
 
-# Brevo SMTP
-SMTP_HOST  = os.getenv("SMTP_HOST", "smtp-relay.brevo.com")
-SMTP_PORT  = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER  = os.getenv("SMTP_USER", "")
-SMTP_PASS  = os.getenv("SMTP_PASS", "")
-EMAIL_FROM = os.getenv("EMAIL_FROM", "")
-EMAIL_TO   = os.getenv("EMAIL_TO",   "nucleodigitalmendoncagalvao@gmail.com")
-print(f"[EMAIL] FROM={EMAIL_FROM}  |  TO={EMAIL_TO}  |  SMTP={SMTP_HOST}:{SMTP_PORT}")
+# Brevo API (envia via HTTP em vez de SMTP)
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
+EMAIL_FROM    = os.getenv("EMAIL_FROM", "")
+EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Mendonça Galvão")
+EMAIL_TO      = os.getenv("EMAIL_TO", "nucleodigitalmendoncagalvao@gmail.com")
+print(f"[EMAIL] FROM={EMAIL_FROM} | TO={EMAIL_TO} | BREVO_API={'SET' if BREVO_API_KEY else 'NÃO CONFIGURADO'}")
 
 # Templates e Arquivos Estáticos
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -341,40 +335,46 @@ def build_email_html(data: dict, file_names: list, submission_id: str) -> str:
 </html>"""
 
 
-def _smtp_send(msg: MIMEMultipart):
-    """Envia uma mensagem via Brevo SMTP."""
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-        server.ehlo()
-        server.starttls()
-        server.login(SMTP_USER, SMTP_PASS)
-        server.send_message(msg)
+def _brevo_send(to_email: str, subject: str, html: str,
+                attachments: list | None = None):
+    """Envia e-mail via Brevo API REST (sem SMTP)."""
+    payload: dict = {
+        "sender": {"email": EMAIL_FROM, "name": EMAIL_FROM_NAME},
+        "to": [{"email": to_email}],
+        "subject": subject,
+        "htmlContent": html,
+    }
+    if attachments:
+        payload["attachment"] = [
+            {"name": name, "content": base64.b64encode(content).decode()}
+            for name, content in attachments
+        ]
+    with httpx.Client(timeout=30) as client:
+        r = client.post(
+            "https://api.brevo.com/v3/smtp/email",
+            json=payload,
+            headers={"api-key": BREVO_API_KEY},
+        )
+    if r.status_code not in (200, 201):
+        raise RuntimeError(f"Brevo API {r.status_code}: {r.text}")
+    return r.json()
 
 
 def send_email(data: dict, file_names: list, submission_id: str,
                attachments: list | None = None):
-    """Envia e-mail de solicitação para o escritório via Brevo SMTP.
-    attachments: list de (filename: str, content: bytes)
-    """
-    if not SMTP_USER:
-        print(f"[EMAIL] SMTP_USER não configurado. Submission ID: {submission_id}")
+    """Envia e-mail de solicitação para o escritório via Brevo API."""
+    if not BREVO_API_KEY:
+        print(f"[EMAIL] BREVO_API_KEY não configurado. Submission ID: {submission_id}")
         return
-
-    msg = MIMEMultipart('mixed')
-    msg['From']    = EMAIL_FROM
-    msg['To']      = EMAIL_TO
-    msg['Subject'] = f"[Abertura de Empresa] Nova Solicitação — ID {submission_id[:8].upper()}"
-    msg.attach(MIMEText(build_email_html(data, file_names, submission_id), 'html', 'utf-8'))
-
-    for name, content in (attachments or []):
-        part = MIMEBase('application', 'octet-stream')
-        part.set_payload(content)
-        encoders.encode_base64(part)
-        part.add_header('Content-Disposition', f'attachment; filename="{name}"')
-        msg.attach(part)
-
-    _smtp_send(msg)
-    print(f"[EMAIL] Enviado via Brevo para {EMAIL_TO} — ID {submission_id} "
-          f"({len(attachments or [])} anexo(s))")
+    subject = f"[Abertura de Empresa] Nova Solicitação — ID {submission_id[:8].upper()}"
+    html    = build_email_html(data, file_names, submission_id)
+    try:
+        _brevo_send(EMAIL_TO, subject, html, attachments)
+        print(f"[EMAIL] Enviado via Brevo API para {EMAIL_TO} — ID {submission_id}")
+    except Exception as e:
+        import traceback
+        print(f"[EMAIL] ERRO ao enviar: {e}")
+        traceback.print_exc()
 
 
 def build_confirmation_html(data: dict, file_names: list, submission_id: str) -> str:
@@ -509,23 +509,23 @@ def build_confirmation_html(data: dict, file_names: list, submission_id: str) ->
 
 def send_confirmation_email(data: dict, file_names: list,
                             submission_id: str):
-    """Envia e-mail de confirmação para o cliente que preencheu o formulário."""
+    """Envia e-mail de confirmação para o cliente via Brevo API."""
     client_email = data.get("email", "").strip()
     if not client_email:
         print("[CONFIRM] Campo 'email' não preenchido — confirmação não enviada.")
         return
-    if not SMTP_USER:
+    if not BREVO_API_KEY:
         return
-
-    razao = data.get("razao_social_1") or data.get("nome_fantasia") or "Nova Empresa"
-    msg = MIMEMultipart('alternative')
-    msg['From']    = EMAIL_FROM
-    msg['To']      = client_email
-    msg['Subject'] = f"Recebemos sua solicitação — {razao}"
-    msg.attach(MIMEText(build_confirmation_html(data, file_names, submission_id), 'html', 'utf-8'))
-
-    _smtp_send(msg)
-    print(f"[CONFIRM] E-mail de confirmação enviado para {client_email}")
+    razao   = data.get("razao_social_1") or data.get("nome_fantasia") or "Nova Empresa"
+    subject = f"Recebemos sua solicitação — {razao}"
+    html    = build_confirmation_html(data, file_names, submission_id)
+    try:
+        _brevo_send(client_email, subject, html)
+        print(f"[CONFIRM] E-mail de confirmação enviado para {client_email}")
+    except Exception as e:
+        import traceback
+        print(f"[CONFIRM] ERRO ao enviar: {e}")
+        traceback.print_exc()
 
 
 # ── ROUTES ────────────────────────────────────────────────────────────────────
