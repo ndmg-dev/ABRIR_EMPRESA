@@ -194,6 +194,25 @@ EMAIL_SECTIONS = [
     ]),
 ]
 
+# Campos que NÃO devem receber title-case
+_NO_TITLE_CASE = {"email", "uf", "cep", "cnae_codigo"}
+
+def _fmt_value(key: str, value: str) -> str:
+    """Formata o valor de um campo para exibição no e-mail.
+    - valor_capital  → formatado como BRL (ex: 1.000,00)
+    - demais campos  → title case, exceto os de _NO_TITLE_CASE
+    """
+    if key == "valor_capital":
+        try:
+            num = float(value.replace(",", "."))
+            return f"R$ {num:_.2f}".replace(".", ",").replace("_", ".")
+        except ValueError:
+            return value
+    if key in _NO_TITLE_CASE:
+        return value
+    return value.title()
+
+
 def _section_block(title: str, rows_html: str) -> str:
     return f"""
     <table width="100%" cellpadding="0" cellspacing="0"
@@ -233,7 +252,7 @@ def build_email_html(data: dict, file_names: list, submission_id: str) -> str:
             value = data.get(key, "").strip()
             if not value:
                 continue
-            rows_html += _row(label, value, shade)
+            rows_html += _row(label, _fmt_value(key, value), shade)
             shade = not shade
         if rows_html:
             sections_html += _section_block(title, rows_html)
@@ -385,18 +404,20 @@ def build_confirmation_html(data: dict, file_names: list, submission_id: str) ->
 
     # Build data summary rows (light theme)
     rows = ""
+    row_count = 0
     for key, label in FIELD_LABELS.items():
         value = data.get(key, "").strip()
         if not value:
             continue
-        bg = "#f9f6f1" if len(rows) % 2 == 0 else "#ffffff"
+        bg = "#f9f6f1" if row_count % 2 == 0 else "#ffffff"
+        row_count += 1
         rows += f"""
           <tr>
             <td style="padding:9px 16px;width:190px;font-size:12px;color:#7a6a50;
                        background:{bg};border-bottom:1px solid #ede8df;
                        white-space:nowrap;vertical-align:top">{label}</td>
             <td style="padding:9px 16px;font-size:13px;color:#2d2416;
-                       background:{bg};border-bottom:1px solid #ede8df">{value}</td>
+                       background:{bg};border-bottom:1px solid #ede8df">{_fmt_value(key, value)}</td>
           </tr>"""
 
     files_list = "".join(
