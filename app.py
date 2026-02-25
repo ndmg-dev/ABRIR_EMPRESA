@@ -8,8 +8,8 @@ from email.mime.base import MIMEBase
 from email import encoders
 from datetime import datetime
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import sqlite3
@@ -529,13 +529,18 @@ def send_confirmation_email(data: dict, file_names: list,
 
 
 # ── ROUTES ────────────────────────────────────────────────────────────────────
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return RedirectResponse(url="/static/img/favicon.png")
+
+
 @app.get("/", response_class=HTMLResponse)
 async def get_wizard(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
 @app.post("/submit")
-async def submit_form(request: Request):
+async def submit_form(request: Request, background_tasks: BackgroundTasks):
     form_data  = await request.form()
     plain_data = {
         key: form_data[key]
@@ -605,16 +610,14 @@ async def submit_form(request: Request):
 
         conn.commit()
 
-        try:
-            send_email(plain_data, file_names, submission_id,
-                       attachments=attachments)
-        except Exception as mail_err:
-            print(f"[EMAIL] Erro ao enviar (interno): {mail_err}")
-
-        try:
-            send_confirmation_email(plain_data, file_names, submission_id)
-        except Exception as conf_err:
-            print(f"[CONFIRM] Erro ao enviar confirmação: {conf_err}")
+        # Envia emails em background — não bloqueia a resposta ao usuário
+        background_tasks.add_task(
+            send_email, plain_data, file_names, submission_id,
+            attachments=attachments
+        )
+        background_tasks.add_task(
+            send_confirmation_email, plain_data, file_names, submission_id
+        )
 
         return JSONResponse({"status": "success", "id": submission_id})
 
