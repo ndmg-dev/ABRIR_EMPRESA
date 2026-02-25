@@ -232,6 +232,22 @@ document.addEventListener('DOMContentLoaded', () => {
         e.target.value = !x[2] ? x[1] : '(' + x[1] + ') ' + x[2] + (x[3] ? '-' + x[3] : '');
     });
 
+    // ── Inscrição Imobiliária mask (IPTU) — formato 0000.0000.000.0000 ──
+    const inscricaoInput = document.getElementById('inscricao_imobiliaria');
+    if (inscricaoInput) {
+        inscricaoInput.addEventListener('input', (e) => {
+            // Remove tudo que não for dígito e limita a 15 dígitos
+            const digits = e.target.value.replace(/\D/g, '').slice(0, 15);
+            let v = digits;
+            // Aplica pontos: 4 . 4 . 3 . 4
+            if (v.length > 4) v = v.slice(0, 4) + '.' + v.slice(4);
+            if (v.length > 9) v = v.slice(0, 9) + '.' + v.slice(9);
+            if (v.length > 13) v = v.slice(0, 13) + '.' + v.slice(13);
+            e.target.value = v;
+            validateCurrentStep();
+        });
+    }
+
     // ── Submit ────────────────────────────────────────────────────────
     const submitWizard = async () => {
         const formData = new FormData(form);
